@@ -1,7 +1,6 @@
-node_modules
+node_modules/
 .env
-.env.*
-!.env.example
-*.enc
-npm-debug.log*
+*.log
 .DS_Store
+.storage-local/
+agente/
