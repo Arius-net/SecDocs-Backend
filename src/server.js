@@ -1,59 +1,33 @@
-'use strict';
-
-const bcrypt = require('bcryptjs');
-const { load } = require('./config');
-const { createDb, migrate } = require('./db');
-const { createStorage } = require('./storage');
-const { createVault } = require('./services/vault');
-const { createApp } = require('./app');
+import { config } from './config/env.js';
+import { pool } from './db/pool.js';
+import { runMigrations } from './db/migrate.js';
+import { createApp } from './app.js';
+import { startJobs, stopJobs } from './jobs/index.js';
 
 async function main() {
-  const config = load();
-  const db = createDb(config.databaseUrl);
+  const applied = await runMigrations();
+  console.log(applied.length ? `[db] migraciones aplicadas: ${applied.join(', ')}` : '[db] esquema al día');
 
-  // Espera a que PostgreSQL esté listo (útil al arrancar con Docker Compose).
-  for (let i = 1; ; i++) {
-    try {
-      await db.query('SELECT 1');
-      break;
-    } catch (e) {
-      if (i >= 30) throw e;
-      console.log(`[db] esperando a PostgreSQL (${i}/30)…`);
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-  }
-  await migrate(db);
+  const app = createApp();
+  const server = app.listen(config.port, () => {
+    console.log(`[api] SecDocs v2 escuchando en :${config.port} (${config.nodeEnv})`);
+  });
+  const jobs = startJobs(); // no programa nada con NODE_ENV=test
 
-  const hasher = {
-    hash: (pw) => bcrypt.hash(pw, config.bcryptCost),
-    compare: (pw, hash) => bcrypt.compare(pw, hash),
+  const shutdown = (signal) => {
+    console.log(`[api] ${signal} recibido, cerrando...`);
+    stopJobs(jobs);
+    server.close(async () => {
+      await pool.end().catch(() => {});
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10_000).unref();
   };
-  const vault = createVault({ db, storage: createStorage(config), hasher, config });
-  const app = createApp({ vault, config });
-
-  const server = app.listen(config.port, () => console.log(`[api] SecDocs escuchando en :${config.port}`));
-
-  // Purga periódica: vence enlaces, destruye archivos vencidos (crypto-shredding).
-  const tick = async () => {
-    try {
-      const r = await vault.runPurgeCycle();
-      if (r.expiredLinks || r.purgedFiles) console.log('[purge]', r);
-    } catch (e) {
-      console.error('[purge] error', e.message);
-    }
-  };
-  const timer = setInterval(tick, config.purgeIntervalMs);
-  tick();
-
-  const shutdown = () => {
-    clearInterval(timer);
-    server.close(() => db.end().then(() => process.exit(0)));
-  };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-main().catch((e) => {
-  console.error('[api] no se pudo iniciar:', e.message);
+main().catch((err) => {
+  console.error('[fatal]', err.message);
   process.exit(1);
 });

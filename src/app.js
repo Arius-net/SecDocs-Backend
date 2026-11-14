@@ -1,28 +1,30 @@
-'use strict';
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import { config } from './config/env.js';
+import {
+  helmetMiddleware,
+  corsMiddleware,
+  globalLimiter,
+} from './middlewares/security.middleware.js';
+import { errorHandler, notFoundHandler } from './middlewares/error.middleware.js';
+import { apiRouter } from './modules/index.js';
 
-const express = require('express');
-const cookieParser = require('cookie-parser');
-const { securityHeaders, limiters } = require('./middleware/security');
-const { buildRouter, errorHandler } = require('./routes');
-
-function createApp({ vault, config, log = console }) {
+export function createApp() {
   const app = express();
-  app.disable('x-powered-by');
-  // Detrás de un proxy (Next.js / Railway) para que req.ip sea la IP real del cliente.
-  const tp = config.trustProxy;
-  app.set('trust proxy', /^\d+$/.test(String(tp)) ? Number(tp) : tp);
 
-  app.use(securityHeaders());
-  app.use(express.json({ limit: '16kb' }));
+  app.disable('x-powered-by');
+  // Necesario para que rate-limit y logs vean la IP real detrás de un proxy/Cloudflare.
+  if (config.isProd) app.set('trust proxy', 1);
+
+  app.use(helmetMiddleware);
+  app.use(corsMiddleware);
+  app.use(globalLimiter);
+  app.use(express.json({ limit: '100kb' }));
   app.use(cookieParser());
 
-  app.get('/health', (_req, res) => res.json({ ok: true }));
-  app.use('/api', limiters.api, buildRouter({ vault, config }));
+  app.use('/api/v1', apiRouter);
 
-  // 404 uniforme para cualquier ruta desconocida.
-  app.use((_req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No encontrado' } }));
-  app.use(errorHandler(log));
+  app.use(notFoundHandler);
+  app.use(errorHandler);
   return app;
 }
-
-module.exports = { createApp };
