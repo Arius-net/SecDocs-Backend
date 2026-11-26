@@ -40,6 +40,17 @@ const isProd = nodeEnv === 'production';
 const jwtSecret = required('JWT_SECRET');
 if (jwtSecret.length < 32) throw new Error('JWT_SECRET debe tener al menos 32 caracteres');
 
+const mailConfig = {
+  webhookUrl: (process.env.MAIL_WEBHOOK_URL || '').trim(),
+  webhookSecret: (process.env.MAIL_WEBHOOK_SECRET || '').trim(),
+  host: (process.env.SMTP_HOST || '').trim(),
+  port: int('SMTP_PORT', 587),
+  secure: bool('SMTP_SECURE', false),
+  user: process.env.SMTP_USER || '',
+  pass: process.env.SMTP_PASS || '',
+  from: process.env.SMTP_FROM || process.env.MAIL_FROM || 'SecDocs <no-reply@secdocs.local>',
+};
+
 export const config = Object.freeze({
   nodeEnv,
   isProd,
@@ -80,12 +91,6 @@ export const config = Object.freeze({
   },
   maxFileBytes: int('MAX_FILE_SIZE_MB', 15) * 1024 * 1024,
   vaultMaxDays: int('VAULT_MAX_DAYS', 365),
-  smtp: {
-    host: process.env.SMTP_HOST || '',
-    port: int('SMTP_PORT', 587),
-    secure: bool('SMTP_SECURE', false),
-    user: process.env.SMTP_USER || '',
-    pass: process.env.SMTP_PASS || '',
-    from: process.env.SMTP_FROM || process.env.MAIL_FROM || 'SecDocs <no-reply@secdocs.local>',
-  },
+  mail: mailConfig,
+  smtp: mailConfig,
 });

@@ -3,13 +3,22 @@ import { config } from '../config/env.js';
 
 let transporter = null;
 
+function resolveProvider() {
+  if (config.mail.webhookUrl) return 'webhook-https';
+  if (config.mail.host) return 'smtp';
+  return 'console';
+}
+
+console.info(`[mail] proveedor activo: ${resolveProvider()}`);
+
 function getTransporter() {
   if (!transporter) {
     transporter = nodemailer.createTransport({
-      host: config.smtp.host,
-      port: config.smtp.port,
-      secure: config.smtp.secure,
-      auth: config.smtp.user ? { user: config.smtp.user, pass: config.smtp.pass } : undefined,
+      host: config.mail.host,
+      port: config.mail.port,
+      secure: config.mail.secure,
+      connectionTimeout: 10_000,
+      auth: config.mail.user ? { user: config.mail.user, pass: config.mail.pass } : undefined,
     });
   }
   return transporter;
@@ -20,27 +29,60 @@ function escapeHtml(s) {
 }
 
 /**
- * Envío de correo. Sin SMTP: en desarrollo imprime el correo SOLO en consola;
- * en producción falla (nunca se enviaría la clave de Canal 2).
+ * Envío de correo con prioridad:
+ *  1) Webhook HTTPS (puerto 443, ej. Google Apps Script) si MAIL_WEBHOOK_URL está definido.
+ *  2) Nodemailer SMTP si SMTP_HOST está definido.
+ *  3) Consola en desarrollo (en producción lanza error).
  * Nunca escribe el contenido en access_logs.
  */
 export async function sendMail({ to, subject, text, html }) {
-  if (!config.smtp.host) {
-    if (config.isProd) throw new Error('SMTP no configurado: no se puede enviar correo en producción');
-    console.log(
-      [
-        '┌── [mail:dev] SMTP no configurado, correo NO enviado (solo consola de desarrollo) ──',
-        `│ Para:    ${to}`,
-        `│ Asunto:  ${subject}`,
-        '│',
-        ...text.split('\n').map((l) => `│ ${l}`),
-        '└──────────────────────────────────────────────────────────────────────',
-      ].join('\n'),
-    );
-    return { delivered: false, mode: 'console' };
+  if (config.mail.webhookUrl) {
+    const res = await fetch(config.mail.webhookUrl, {
+      method: 'POST',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15_000),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret: config.mail.webhookSecret,
+        to,
+        subject,
+        text,
+        html,
+      }),
+    });
+
+    let body = null;
+    try {
+      body = await res.json();
+    } catch {
+      // respuesta no JSON
+    }
+
+    if (!res.ok || body?.ok !== true) {
+      const detail = body?.error || body?.message || `HTTP ${res.status}`;
+      console.error(`[mail:webhook] fallo al enviar correo por HTTPS (${res.status}):`, detail);
+      throw new Error(`Fallo en webhook de correo: ${detail}`);
+    }
+    return { delivered: true, mode: 'webhook-https' };
   }
-  await getTransporter().sendMail({ from: config.smtp.from, to, subject, text, html });
-  return { delivered: true, mode: 'smtp' };
+
+  if (config.mail.host) {
+    await getTransporter().sendMail({ from: config.mail.from, to, subject, text, html });
+    return { delivered: true, mode: 'smtp' };
+  }
+
+  if (config.isProd) throw new Error('SMTP no configurado: no se puede enviar correo en producción');
+  console.log(
+    [
+      '┌── [mail:dev] SMTP no configurado, correo NO enviado (solo consola de desarrollo) ──',
+      `│ Para:    ${to}`,
+      `│ Asunto:  ${subject}`,
+      '│',
+      ...text.split('\n').map((l) => `│ ${l}`),
+      '└──────────────────────────────────────────────────────────────────────',
+    ].join('\n'),
+  );
+  return { delivered: false, mode: 'console' };
 }
 
 /**
