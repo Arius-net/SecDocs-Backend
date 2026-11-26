@@ -9,8 +9,8 @@ async function main() {
   console.log(applied.length ? `[db] migraciones aplicadas: ${applied.join(', ')}` : '[db] esquema al día');
 
   const app = createApp();
-  const server = app.listen(config.port, () => {
-    console.log(`[api] SecDocs v2 escuchando en :${config.port} (${config.nodeEnv})`);
+  const server = app.listen(config.port, '0.0.0.0', () => {
+    console.log(`[api] SecDocs v2 escuchando en 0.0.0.0:${config.port} (${config.nodeEnv})`);
   });
   const jobs = startJobs(); // no programa nada con NODE_ENV=test
 

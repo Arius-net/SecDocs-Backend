@@ -44,6 +44,7 @@ export const config = Object.freeze({
   nodeEnv,
   isProd,
   port: int('PORT', 3000),
+  trustProxy: int('TRUST_PROXY', 1),
   corsOrigins: (process.env.CORS_ORIGINS || '')
     .split(',')
     .map((s) => s.trim())
@@ -85,6 +86,6 @@ export const config = Object.freeze({
     secure: bool('SMTP_SECURE', false),
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',
-    from: process.env.MAIL_FROM || 'SecDocs <no-reply@secdocs.local>',
+    from: process.env.SMTP_FROM || process.env.MAIL_FROM || 'SecDocs <no-reply@secdocs.local>',
   },
 });
