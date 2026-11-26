@@ -13,8 +13,8 @@ export function createApp() {
   const app = express();
 
   app.disable('x-powered-by');
-  // Necesario para que rate-limit y logs vean la IP real detrás de un proxy/Cloudflare.
-  if (config.isProd) app.set('trust proxy', 1);
+  // Necesario para que rate-limit, sesiones y logs vean la IP real detrás de Render/Railway/Cloudflare.
+  if (config.trustProxy > 0) app.set('trust proxy', config.trustProxy);
 
   app.use(helmetMiddleware);
   app.use(corsMiddleware);
