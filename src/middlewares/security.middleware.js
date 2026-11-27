@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit';
 import { config } from '../config/env.js';
 
 export const helmetMiddleware = helmet({
+  hsts: { maxAge: 31536000, includeSubDomains: true },
   contentSecurityPolicy: {
     directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] },
   },

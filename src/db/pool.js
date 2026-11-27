@@ -6,7 +6,9 @@ pg.types.setTypeParser(20, (v) => Number.parseInt(v, 10));
 
 export const pool = new pg.Pool({
   connectionString: config.db.url,
-  ssl: config.db.ssl ? { rejectUnauthorized: false } : false,
+  ssl: config.db.ssl
+    ? { rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false' }
+    : false,
   max: 10,
   idleTimeoutMillis: 30_000,
 });

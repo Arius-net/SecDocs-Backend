@@ -5,6 +5,7 @@ import { config } from '../../config/env.js';
 import { query, withTransaction } from '../../db/pool.js';
 import { HttpError } from '../../middlewares/error.middleware.js';
 import { asyncHandler } from '../../middlewares/async.js';
+import { validateBody, createMemberSchema } from '../../middlewares/validate.middleware.js';
 import { sha256Hex } from '../../services/crypto.service.js';
 import { logEvent } from '../../services/audit.service.js';
 import { normalizeEmail } from '../../services/validators.js';
@@ -27,6 +28,7 @@ export const membersRouter = Router({ mergeParams: true });
 
 membersRouter.post(
   '/',
+  validateBody(createMemberSchema),
   asyncHandler(async (req, res) => {
     const { vaultId } = req.params;
     const body = req.body ?? {};

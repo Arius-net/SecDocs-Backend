@@ -4,6 +4,7 @@ import { query, withTransaction } from '../../db/pool.js';
 import { HttpError } from '../../middlewares/error.middleware.js';
 import { asyncHandler } from '../../middlewares/async.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
+import { validateBody, createVaultSchema } from '../../middlewares/validate.middleware.js';
 import { generateKek, wrapKek } from '../../services/crypto.service.js';
 import { logEvent, metricsVaultAdded } from '../../services/audit.service.js';
 import { getOwnedVault, assertUuid, purgeVaultTx, deleteStorageObjects } from './vault.service.js';
@@ -76,6 +77,7 @@ vaultsRouter.get(
 
 vaultsRouter.post(
   '/',
+  validateBody(createVaultSchema),
   asyncHandler(async (req, res) => {
     const name = parseName(req.body?.name);
     const expiresAt = parseExpiresAt(req.body?.expires_at);

@@ -5,6 +5,7 @@ import { HttpError } from '../../middlewares/error.middleware.js';
 import { asyncHandler } from '../../middlewares/async.js';
 import { authLimiter } from '../../middlewares/security.middleware.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
+import { validateBody, registerSchema, loginSchema } from '../../middlewares/validate.middleware.js';
 import { createSession, setSessionCookie, clearSessionCookie } from '../../services/session.service.js';
 import { logEvent, adjustUserMetrics } from '../../services/audit.service.js';
 import { normalizeEmail } from '../../services/validators.js';
@@ -30,6 +31,7 @@ export const authRouter = Router();
 authRouter.post(
   '/register',
   authLimiter,
+  validateBody(registerSchema),
   asyncHandler(async (req, res) => {
     const email = normalizeEmail(req.body?.email);
     const { password } = req.body ?? {};
@@ -64,6 +66,7 @@ authRouter.post(
 authRouter.post(
   '/login',
   authLimiter,
+  validateBody(loginSchema, { status: 401, overrideMessage: 'Credenciales inválidas' }),
   asyncHandler(async (req, res) => {
     const invalid = () => new HttpError(401, 'Credenciales inválidas');
     const { email: rawEmail, password } = req.body ?? {};
