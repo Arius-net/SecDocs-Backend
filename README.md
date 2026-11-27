@@ -1,121 +1,139 @@
-# SecDocs v2 · Backend
+# SecDocs · Backend
 
-API RESTful para bóvedas digitales seguras con cifrado en reposo mediante **Envelope Encryption**, compartición por correo electrónico verificado con autenticación fuera de banda (Canal 1: enlace de invitación / Canal 2: contraseña enviada por correo) y bitácora de auditoría con retención legal (LFPDPPP).
+API REST de **SecDocs**, el motor de seguridad, cifrado y control de acceso para bóvedas digitales con cifrado en reposo y entrega de credenciales por doble canal.
 
----
+<p align="center">
+  <img src="logo.png" alt="Logo de SecDocs" width="160">
+</p>
 
-## Arquitectura de Seguridad
+![Captura de la interfaz de SecDocs](preview.png)
 
-- **Envelope Encryption (AES-256-GCM):**
-  - **Master Key (MEK):** clave maestra de 32 bytes (256 bits) configurada por variable de entorno (`MASTER_ENCRYPTION_KEY`).
-  - **KEK por bóveda (`vaults.wrapped_kek`):** al crear una bóveda se genera una KEK aleatoria de 32 bytes y se envuelve con la MEK (`iv:authTag:ciphertext` en base64).
-  - **DEK por archivo (`vault_files.wrapped_dek`):** cada archivo cifrado en RAM genera una DEK aleatoria de 32 bytes. El binario se cifra con AES-256-GCM (IV aleatorio de 12 bytes y AuthTag de 16 bytes) y se sube como `<uuid>.enc` a Cloudflare R2. La DEK se envuelve con la KEK de la bóveda.
-  - **Crypto-Shredding:** al purgar un archivo, eliminar una bóveda o vencer su fecha de expiración, se establecen `wrapped_dek = NULL` (y `wrapped_kek = NULL` para la bóveda), dejando los binarios cifrados irrecuperables, además de solicitar su borrado en el almacenamiento.
-- **Validación de archivos:** subida en memoria (`multer.memoryStorage`), límite configurable (`MAX_FILE_SIZE_MB=15`) y detección de MIME real mediante *magic bytes* (`file-type`) contra una lista blanca de formatos seguros (PDF, PNG, JPEG, WEBP, DOCX, XLSX, PPTX, ZIP, TXT/CSV UTF-8 sin bytes nulos). Rechaza ejecutables, scripts, HTML y SVG con `415`.
-- **Autenticación y Sesiones:**
-  - Contraseñas de usuarios y claves de Canal 2 hasheadas con `bcrypt` (costo 12).
-  - Tokens de invitación y tickets de descarga de un solo uso (TTL 60s) almacenados únicamente como `SHA-256`.
-  - Sesiones JWT (`HS256` explícito) en cookies `HttpOnly`, `SameSite=Strict` y `Secure` en producción, con `jti` registrado en `user_sessions` y lista negra `revoked_tokens` (con soporte de **Kill-Switch** para revocar todas las sesiones activas).
-- **Protección contra fuerza bruta y fugas:**
-  - Bloqueo exponencial en el desbloqueo de invitaciones (`2^n` segundos, bloqueo de 15 min y estado `TEMP_LOCKED` al 5.º intento fallido).
-  - Cabeceras estrictas en rutas compartidas y descargas (`X-Robots-Tag: noindex, nofollow, noarchive`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`).
-  - Consultas SQL 100% parametrizadas (`pg`) y saneamiento automático de `access_logs` para evitar el registro de secretos.
-- **Retención LFPDPPP y Tareas Programadas (`node-cron`):**
-  - Purga diaria de `access_logs` mayores a 6 meses (`daily_stats_rollup` anónimo se conserva indefinidamente).
-  - Expiración automática y crypto-shredding de bóvedas vencidas.
-  - Limpieza periódica de `revoked_tokens` y `user_sessions` expirados.
+![Node.js](https://img.shields.io/badge/Node.js-20+-339933?logo=nodedotjs&logoColor=white)
+![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Supabase-4169E1?logo=postgresql&logoColor=white)
+![Cloudflare R2](https://img.shields.io/badge/Storage-Cloudflare_R2-F38020?logo=cloudflare&logoColor=white)
+![Licencia MIT](https://img.shields.io/badge/licencia-MIT-green)
 
----
+## Qué es SecDocs
 
-## Variables de Entorno
+SecDocs permite crear **bóvedas digitales** con fecha de expiración, almacenar documentos cifrados y compartirlos con invitados específicos bajo control estricto. Este repositorio implementa la lógica de negocio, la criptografía, la gestión de sesiones y el almacenamiento; la interfaz vive en [SecDocs-Frontend](https://github.com/JILAJ06/SecDocs-Frontend) y el esquema relacional en [SecDocs-DB](https://github.com/JILAJ06/SecDocs-DB).
 
-Copia `.env.example` a `.env` y configura los valores necesarios:
+Capacidades principales del backend:
 
-| Variable | Descripción | Default |
+- **Envelope Encryption (AES-256-GCM).** Jerarquía de tres llaves (`MEK → KEK → DEK`). La llave maestra (`MEK`) vive solo en variables de entorno; cada bóveda genera su propia `KEK` envuelta y cada archivo su propia `DEK` única con `iv` y `auth_tag` para garantizar confidencialidad e integridad.
+- **Validación por *magic bytes* en RAM.** Antes de cifrar o subir un archivo, el servidor inspecciona sus bytes reales en memoria. Archivos renombrados o maliciosos (como HTML/XSS o ejecutables disfrazados de `.pdf`) se rechazan de inmediato con `415 Unsupported Media Type`.
+- **Enlaces dinámicos nativos.** Genera tokens criptográficos únicos con `crypto` y ensambla las URLs dinámicamente según `FRONTEND_URL`. En PostgreSQL solo se guarda el hash `SHA-256` (`token_hash`), ligado al correo invitado, expiración y límite de descargas.
+- **Doble canal (Canal 1 y Canal 2).** El dueño entrega el enlace (Canal 1) y el backend envía la clave de un solo uso por correo (Canal 2) mediante un webhook HTTPS hacia Google Apps Script (evitando bloqueos SMTP en producción).
+- **Sesiones auditadas y *Kill-Switch*.** Autenticación con contraseñas en `bcrypt` (costo 12) y cookies `HttpOnly` con JWT + `jti` registrado en `user_sessions`. Revocar una sesión o activar el *Kill-Switch* inserta el `jti` en `revoked_tokens` y bloquea el acceso al instante (`401`).
+- **Crypto-shredding.** Al purgar un archivo o bóveda, se elimina el binario `.enc` de Cloudflare R2 y se sobreescriben `wrapped_dek` / `wrapped_kek` con `NULL`, dejando cualquier copia residual matemáticamente irrecuperable.
+- **Auditoría y protección contra abuso.** *Rate limiting* con soporte de proxy (`TRUST_PROXY=1`), bloqueo temporal (`TEMP_LOCKED`) tras 5 intentos fallidos y bitácora forense en `access_logs` (IP real, User-Agent y evento).
+
+## Endpoints principales
+
+Todas las rutas de negocio se sirven bajo el prefijo `/api/v1`.
+
+| Módulo | Rutas principales | Qué hace |
 |---|---|---|
-| `NODE_ENV` | Entorno (`development`, `production`, `test`) | `development` |
-| `PORT` | Puerto HTTP de la API | `3000` |
-| `CORS_ORIGINS` | Orígenes permitidos separados por coma | `http://localhost:5173` |
-| `FRONTEND_URL` | URL base del frontend para enlaces `/invitacion/<token>` | `http://localhost:5173` |
-| `DATABASE_URL` | Cadena de conexión PostgreSQL 15+ | — |
-| `DATABASE_SSL` | Habilitar SSL para PostgreSQL (`true`/`false`) | `false` |
-| `MASTER_ENCRYPTION_KEY` | Clave maestra de 32 bytes (64 hex o base64) | *(requerida)* |
-| `JWT_SECRET` | Secreto para firma JWT (mín. 32 caracteres) | *(requerida)* |
-| `JWT_EXPIRES_HOURS` | Duración de sesión JWT en horas | `8` |
-| `COOKIE_NAME` | Nombre de la cookie de sesión | `secdocs_session` |
-| `STORAGE_DRIVER` | `r2` (producción) o `local` (solo pruebas locales) | `r2` |
-| `R2_ACCOUNT_ID` / `R2_ENDPOINT` | Cuenta o endpoint de Cloudflare R2 | — |
-| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Credenciales S3 de Cloudflare R2 | — |
-| `R2_BUCKET` | Nombre del bucket R2 | `secdocs` |
-| `MAX_FILE_SIZE_MB` | Tamaño máximo por archivo en MB | `15` |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Configuración SMTP para Canal 2 (en dev sin SMTP imprime en consola) | — |
+| **Salud** | `GET /health` | Verifica estado del servidor y conexión activa con PostgreSQL. |
+| **Autenticación** | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | Registro, inicio de sesión con cookie `HttpOnly`, cierre de sesión y perfil activo. |
+| **Bóvedas** | `GET/POST /vaults`, `GET/DELETE /vaults/:vaultId`, `PATCH /vaults/:vaultId/status` | Crear, listar, bloquear/reactivar y purgar bóvedas (*crypto-shredding*). |
+| **Archivos** | `POST /vaults/:vaultId/files`, `DELETE /vaults/:vaultId/files/:fileId` | Validación por *magic bytes*, cifrado AES-256-GCM en RAM, subida a R2 y borrado seguro. |
+| **Invitaciones** | `POST /vaults/:vaultId/members`, `GET /invitations/:token`, `POST /invitations/:token/verify-identity`, `POST /invitations/:token/unlock`, `POST /invitations/:token/download` | Emisión de enlaces dinámicos, envío de clave por Canal 2, validación de intentos, tickets de 60 s y descarga descifrada en memoria. |
+| **Auditoría** | `GET /audit/logs`, `GET /audit/stats` | Consulta paginada de `access_logs` y métricas diarias (`daily_stats_rollup`). |
+| **Seguridad** | `GET /security/sessions`, `DELETE /security/sessions/:jti`, `POST /security/kill-switch` | Listado de sesiones activas, revocación individual y cierre global inmediato. |
 
----
+## Stack tecnológico
 
-## Levantar con Docker
+| Herramienta | Uso |
+|---|---|
+| **Node.js + Express** | Runtime, enrutamiento REST, middlewares de seguridad y motor propio de enlaces dinámicos |
+| **PostgreSQL (Supabase)** | Metadatos, llaves envueltas, sesiones, lista negra de tokens y bitácora de auditoría |
+| **Cloudflare R2** | Almacenamiento de objetos compatible con S3 para binarios cifrados (`<uuid>.enc`) |
+| **Módulo `crypto` nativo** | Cifrado autenticado AES-256-GCM, generación de tokens y hashing SHA-256 |
+| **bcrypt** | Hashing de contraseñas de usuarios (costo 12) |
+| **Google Apps Script (Webhook HTTPS)** | Puente por puerto `443` para envío de claves del Canal 2 sin depender de puertos SMTP |
 
-1. Crea `.env` a partir de `.env.example` y genera `MASTER_ENCRYPTION_KEY` y `JWT_SECRET`:
-   ```bash
-   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-   ```
-2. Construye y levanta PostgreSQL 16 + API:
-   ```bash
-   docker compose up --build -d
-   ```
-   Las migraciones SQL idempotentes (`src/db/migrations/`) se ejecutan automáticamente al arrancar el servidor.
-3. Verifica el estado:
-   ```bash
-   curl http://localhost:3000/api/v1/health
-   # {"status":"ok"}
-   ```
+## Requisitos previos
 
----
+- Node.js 20 o superior y npm.
+- Instancia de PostgreSQL (local o Supabase mediante *Session Pooler* en el puerto `5432`).
+- Bucket en Cloudflare R2 (para producción) o almacenamiento local (`STORAGE_DRIVER=local` para desarrollo).
+- Webhook HTTPS de Google Apps Script (o credenciales SMTP en local) para el envío del Canal 2.
 
-## Pruebas
-
-Requiere una instancia de PostgreSQL activa (por ejemplo `docker compose up -d db`):
+## Ejecución en local
 
 ```bash
+# 1. Variables de entorno
+cp .env.example .env            # en PowerShell: Copy-Item .env.example .env
+
+# 2. Dependencias
 npm install
+
+# 3. Migraciones de base de datos
+npm run migrate
+
+# 4. Desarrollo (http://localhost:4000)
+npm run dev
+```
+
+Pruebas automatizadas:
+
+```bash
 npm test
 ```
 
-Las pruebas usan el test runner nativo de Node.js (`node --test --test-concurrency=1`) e incluyen pruebas unitarias de servicios, pruebas de integración de cada módulo (auth, bóvedas, invitaciones, auditoría, cron jobs) y flujo E2E completo.
+## Despliegue en producción
 
----
+El backend está preparado para plataformas PaaS como **Railway** o **Render**:
 
-## Resumen de Endpoints (`/api/v1`)
+- Escucha en `0.0.0.0` usando el puerto inyectado por `PORT`.
+- Usa `TRUST_PROXY=1` para resolver correctamente la IP real del cliente detrás del proxy inverso (necesario para *rate limiting* y `access_logs`).
+- Se conecta a **Supabase** mediante el **Session Pooler (puerto `5432`)** con `DATABASE_SSL=true` para soportar `pg_advisory_lock` en migraciones.
+- Guarda los binarios cifrados en **Cloudflare R2** (`STORAGE_DRIVER=r2`).
+- Envía los correos del Canal 2 por **HTTPS (`443`)** usando `MAIL_WEBHOOK_URL` y `MAIL_WEBHOOK_SECRET`, evitando el bloqueo de puertos SMTP (`465`/`587`) de Railway.
 
-### Salud
-- `GET /health` — Verifica conectividad con PostgreSQL.
+## Variables de entorno
 
-### Autenticación y Seguridad
-- `POST /auth/register` — Registro de usuario, inicializa métricas y emite cookie `HttpOnly`.
-- `POST /auth/login` — Inicio de sesión con protección timing-safe.
-- `POST /auth/logout` — Revoca el `jti` actual y limpia la cookie.
-- `GET /auth/me` — Perfil básico del usuario autenticado.
-- `GET /security/sessions` — Lista sesiones activas del usuario.
-- `DELETE /security/sessions/:jti` — Revoca una sesión específica.
-- `POST /security/kill-switch` — Revoca todas las sesiones activas del usuario.
+Se definen en `.env` (a partir de `.env.example`) y nunca se suben al repositorio.
 
-### Bóvedas y Archivos (Dueño)
-- `GET /vaults` — Métricas y listado de bóvedas del usuario.
-- `POST /vaults` — Crea una bóveda con su KEK envuelta por la MEK.
-- `GET /vaults/:vaultId` — Detalle de bóveda, archivos activos y miembros.
-- `PATCH /vaults/:vaultId/status` — Alterna estado entre `ACTIVE` y `LOCKED`.
-- `DELETE /vaults/:vaultId` — Crypto-shredding total de bóveda, archivos y borrado en storage.
-- `POST /vaults/:vaultId/files` — Sube archivo cifrado (magic bytes + DEK + AES-256-GCM).
-- `DELETE /vaults/:vaultId/files/:fileId` — Crypto-shredding individual y borrado en storage.
+| Variable | Descripción | Ejemplo |
+|---|---|---|
+| `PORT` | Puerto HTTP del servidor | `4000` |
+| `TRUST_PROXY` | Confianza en proxy inverso (`1` en Railway/Render) | `1` |
+| `FRONTEND_URL` | URL base para generar los enlaces dinámicos | `https://sec-docs-frontend.vercel.app` |
+| `CORS_ORIGINS` | Orígenes permitidos separados por coma | `https://sec-docs-frontend.vercel.app` |
+| `DATABASE_URL` | Cadena de conexión PostgreSQL (Session Pooler `:5432`) | `postgresql://user:pass@host:5432/postgres` |
+| `DATABASE_SSL` | Habilita TLS hacia la base de datos | `true` |
+| `JWT_SECRET` | Secreto para firmar tokens de sesión | *(cadena aleatoria larga)* |
+| `MASTER_ENCRYPTION_KEY` | Llave maestra (MEK) de 32 bytes en hex (64 caracteres) | *(64 caracteres hex)* |
+| `MAX_FILE_SIZE_MB` | Tamaño máximo permitido por archivo en RAM | `15` |
+| `STORAGE_DRIVER` | Driver de almacenamiento (`r2` o `local`) | `r2` |
+| `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | Credenciales del bucket en Cloudflare R2 | *(valores de Cloudflare)* |
+| `MAIL_WEBHOOK_URL` | URL `/exec` del puente HTTPS en Google Apps Script | `https://script.google.com/macros/s/.../exec` |
+| `MAIL_WEBHOOK_SECRET` | Secreto compartido para autenticar el webhook de correo | *(clave secreta)* |
 
-### Miembros, Invitaciones y Bóveda Compartida
-- `POST /vaults/:vaultId/members` — Crea invitación (devuelve enlace `/invitacion/<token>` una sola vez).
-- `DELETE /vaults/:vaultId/members/:memberId` — Revoca acceso de un invitado.
-- `GET /invitations/:token` — Info pública mínima con correo enmascarado.
-- `POST /invitations/:token/verify-identity` — Verifica correo del invitado y envía clave Canal 2.
-- `POST /invitations/:token/unlock` — Verifica clave Canal 2 (bloqueo exponencial) y emite ticket de 60s.
-- `GET /shared` — Lista bóvedas compartidas aceptadas del usuario.
-- `GET /shared/:vaultId/files/:fileId/download` — Consume ticket atómicamente, descifra al vuelo y descarga el archivo.
+## Seguridad
 
-### Auditoría y Estadísticas
-- `GET /audit/logs` — Bitácora paginada del dueño con filtros (`event`, `from`, `to`, `page`, `limit`) y política de retención.
-- `GET /audit/stats` — Resumen y serie cronológica de `daily_stats_rollup` (`days=7` o `30`).
+Controles aplicados en el servidor:
+
+- **Cero secretos en Git:** `.env` está excluido en `.gitignore`; las llaves (`MEK`, `JWT_SECRET`, credenciales de R2 y BD) se inyectan únicamente por entorno.
+- **Sin archivos en claro en disco:** Los archivos se validan y cifran en memoria RAM antes de salir hacia Cloudflare R2.
+- **Consultas parametrizadas:** Prevención de inyección SQL en todas las operaciones contra PostgreSQL.
+- **Sin fuga de secretos en logs:** Los registros de consola y `access_logs` nunca imprimen contraseñas, tokens en claro ni llaves criptográficas.
+
+Repositorios del proyecto:
+
+- [SecDocs-Frontend](https://github.com/JILAJ06/SecDocs-Frontend): interfaz web en Next.js y proxy de cookies.
+- **SecDocs-Backend**: este repositorio.
+- [SecDocs-DB](https://github.com/JILAJ06/SecDocs-DB): esquema, migraciones y políticas de auditoría en PostgreSQL.
+
+## Autores
+
+- Alexander Jiménez
+- Sayd Quevedo
+
+Proyecto de la materia **Seguridad Informática**, Universidad Politécnica de Chiapas.
+
+## Licencia
+
+Distribuido bajo la licencia MIT. Consulta [LICENSE](LICENSE).
